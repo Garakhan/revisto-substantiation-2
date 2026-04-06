@@ -1,0 +1,66 @@
+# Cloud/Production Dockerfile - connects to AWS OpenSearch or Elastic Cloud
+FROM python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    POETRY_VERSION=1.8.2
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential curl git libgomp1 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Install Poetry with increased timeout
+RUN curl -sSL https://install.python-poetry.org | python3 - \
+ && ln -s /root/.local/bin/poetry /usr/local/bin/poetry \
+ && poetry config virtualenvs.create false \
+ && poetry config installer.max-workers 1
+
+ENV POETRY_HTTP_TIMEOUT=300
+
+WORKDIR /app
+
+# Copy dependency files
+COPY pyproject.toml poetry.lock* ./
+
+# Install Python dependencies (production only, with retries for large packages)
+RUN poetry install --no-root --no-interaction --no-ansi --only main || \
+    (sleep 5 && poetry install --no-root --no-interaction --no-ansi --only main) || \
+    (sleep 10 && poetry install --no-root --no-interaction --no-ansi --only main)
+
+# Copy application code (baked into image for production)
+COPY revisto_evidence_aligned/ ./revisto_evidence_aligned/
+COPY main.py ./
+
+# Create non-root user
+RUN useradd -m -u 1000 appuser \
+ && mkdir -p /home/appuser/.cache /home/appuser/.huggingface /home/appuser/.stanza_resources /home/appuser/.aws \
+ && chown -R appuser:appuser /app /home/appuser
+
+# Copy AWS credentials for Secrets Manager access
+COPY --chown=appuser:appuser .aws/credentials /home/appuser/.aws/credentials
+
+USER appuser
+
+# Set resource directories
+ENV STANZA_RESOURCES_DIR=/home/appuser/.stanza_resources
+
+# Download Stanza English model
+RUN python3.12 -c "import stanza; stanza.download('en')"
+
+# Runtime environment
+ENV PYTHONPATH=/app \
+    HF_HOME=/home/appuser/.huggingface \
+    TRANSFORMERS_CACHE=/home/appuser/.cache/huggingface \
+    HF_HUB_DISABLE_SYMLINKS_WARNING=1
+
+# Cloud ES - credentials from AWS Secrets Manager
+ENV ES_VERIFY_CERTS=true \
+    AWS_DEFAULT_REGION=us-east-1
+
+EXPOSE 8888
+
+# Production command (no reload)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8888", "--workers", "2"]

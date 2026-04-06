@@ -1,0 +1,41 @@
+variables:
+  DOCKER_HOST: tcp://docker:2376
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: 1
+  DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  GIT_DEPTH: 0
+
+
+stages:
+  - pre-commit
+  - unit-tests
+
+pre-commit:
+  stage: pre-commit
+  image: python:3.11
+  script:
+    - pip install pre-commit
+    - pre-commit run --all-files
+  only:
+    - merge_requests
+    - master
+
+
+unit-tests:
+  stage: unit-tests
+  image: python:3.11
+  allow_failure: true
+  before_script:
+    - pip install poetry
+  script:
+    - poetry config virtualenvs.create false
+    - poetry install --no-root
+    - poetry run pytest ./tests -v  --cov --cov-report=xml --cov-report=html
+  artifacts:
+    paths:
+     - coverage.xml
+     - htmlcov
+  only:
+    - merge_requests
+    - master

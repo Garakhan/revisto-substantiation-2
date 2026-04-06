@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  nlp-grpc:
+    build:
+      context: ./revisto-nlp-grpc-service
+      dockerfile: Dockerfile
+    container_name: revisto-nlp-grpc
+    ports:
+      - "50051:50051"
+    environment:
+      - LOCAL_MODE=true
+      - EMBEDDING_MODEL=${EMBED_MODEL:-pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb}
+      - EMBEDDING_DEVICE=${EMBED_DEVICE:-cpu}
+      - NER_MODEL=${NER_MODEL:-d4data/biomedical-ner-all}
+      - NER_ENABLED=${NER_ENABLED:-true}
+      - PRELOAD_MODELS=true
+      - GRPC_MAX_WORKERS=10
+    volumes:
+      - nlp_models_cache:/home/appuser/.cache
+    networks:
+      - revisto-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import grpc; from generated.nlp import nlp_pb2, nlp_pb2_grpc; ch=grpc.insecure_channel('localhost:50051'); stub=nlp_pb2_grpc.NLPServiceStub(ch); stub.Health(nlp_pb2.HealthRequest())"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.grpc
+    container_name: revisto-api
+    ports:
+      - "8888:8888"
+    volumes:
+      - ~/.aws/credentials:/home/appuser/.aws/credentials:ro
+      - ./revisto_evidence_aligned:/app/revisto_evidence_aligned:ro
+    environment:
+      # NLP via gRPC
+      - NLP_MODE=grpc
+      - NLP_GRPC_HOST=nlp-grpc
+      - NLP_GRPC_PORT=50051
+
+      # Cloud Elasticsearch (loaded from AWS Secrets Manager)
+      - ES_VERIFY_CERTS=true
+      - ES_INDEX=${ES_INDEX}
+      - ES_ALIAS=${ES_ALIAS}
+
+      # AWS region for Secrets Manager
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+
+      # Scoring weights
+      - W_SEMANTIC=${W_SEMANTIC:-3}
+      - W_LEXICAL=${W_LEXICAL:-3}
+      - W_NUMERIC=${W_NUMERIC:-1}
+      - W_ENTITY=${W_ENTITY:-1}
+
+      # Claude filtering
+      - CLAUDE_FILTER_ENABLED=${CLAUDE_FILTER_ENABLED:-true}
+      - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-opus-4-20250514}
+
+      # LandingAI S3 visual_claims bucket (for zero data retention mode)
+      - LANDINGAI_OUTPUT_BUCKET=claimsubstantiation
+
+    depends_on:
+      nlp-grpc:
+        condition: service_healthy
+    networks:
+      - revisto-net
+    restart: unless-stopped
+
+networks:
+  revisto-net:
+    driver: bridge
+
+volumes:
+  nlp_models_cache:
+    driver: local

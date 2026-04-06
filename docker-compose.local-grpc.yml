@@ -1,0 +1,121 @@
+version: '3.8'
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: revisto-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - revisto-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -vq '\"status\":\"red\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    container_name: revisto-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - revisto-net
+    restart: unless-stopped
+
+  nlp-grpc:
+    build:
+      context: ./revisto-nlp-grpc-server
+      dockerfile: Dockerfile
+    container_name: revisto-nlp-grpc
+    ports:
+      - "50051:50051"
+    environment:
+      - LOCAL_MODE=true
+      - EMBEDDING_MODEL=${EMBED_MODEL:-pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb}
+      - EMBEDDING_DEVICE=${EMBED_DEVICE:-cpu}
+      - NER_MODEL=${NER_MODEL:-d4data/biomedical-ner-all}
+      - NER_ENABLED=${NER_ENABLED:-true}
+      - PRELOAD_MODELS=true
+      - GRPC_MAX_WORKERS=10
+    volumes:
+      - nlp_models_cache:/home/appuser/.cache
+    networks:
+      - revisto-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import grpc; from generated.nlp import nlp_pb2, nlp_pb2_grpc; ch=grpc.insecure_channel('localhost:50051'); stub=nlp_pb2_grpc.NLPServiceStub(ch); stub.Health(nlp_pb2.HealthRequest())"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.grpc
+    container_name: revisto-api
+    ports:
+      - "8888:8888"
+    volumes:
+      - ~/.aws/credentials:/home/appuser/.aws/credentials:ro
+      - ./revisto_evidence_aligned:/app/revisto_evidence_aligned
+    environment:
+      # NLP via gRPC
+      - NLP_MODE=grpc
+      - NLP_GRPC_HOST=nlp-grpc
+      - NLP_GRPC_PORT=50051
+
+      # Local Elasticsearch
+      - ES_URL=http://elasticsearch:9200
+      - ES_USER=elastic
+      - ES_PASS=
+      - ES_VERIFY_CERTS=false
+      - ES_INDEX=${ES_INDEX:-revisto_evidence}
+      - ES_ALIAS=${ES_ALIAS:-revisto_evidence}
+
+      # Scoring weights
+      - W_SEMANTIC=${W_SEMANTIC:-3}
+      - W_LEXICAL=${W_LEXICAL:-3}
+      - W_NUMERIC=${W_NUMERIC:-1}
+      - W_ENTITY=${W_ENTITY:-1}
+
+      # Claude filtering
+      - CLAUDE_FILTER_ENABLED=${CLAUDE_FILTER_ENABLED:-true}
+      - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-opus-4-20250514}
+
+      # LandingAI S3 visual_claims bucket (for zero data retention mode)
+      - LANDINGAI_OUTPUT_BUCKET=claimsubstantiation
+
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      nlp-grpc:
+        condition: service_healthy
+    networks:
+      - revisto-net
+    restart: unless-stopped
+
+networks:
+  revisto-net:
+    driver: bridge
+
+volumes:
+  es_data:
+    driver: local
+  nlp_models_cache:
+    driver: local

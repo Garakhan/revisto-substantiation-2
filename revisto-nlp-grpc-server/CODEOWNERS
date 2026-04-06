@@ -1,0 +1,7 @@
+[CI CD Owners]
+CODEOWNERS @oleksii.yarhak
+.gitlab-ci.yml @oleksii.yarhak
+commit.sh @oleksii.yarhak
+docker/ @oleksii.yarhak
+ci/ @oleksii.yarhak
+

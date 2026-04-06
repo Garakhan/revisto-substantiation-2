@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  nlp-grpc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: revisto-nlp-grpc
+    ports:
+      - "50051:50051"
+    environment:
+      - LOCAL_MODE=true
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb}
+      - EMBEDDING_DEVICE=${EMBEDDING_DEVICE:-cpu}
+      - NER_MODEL=${NER_MODEL:-d4data/biomedical-ner-all}
+      - NER_ENABLED=${NER_ENABLED:-true}
+      - PRELOAD_MODELS=true
+      - GRPC_MAX_WORKERS=10
+    volumes:
+      - models_cache:/home/appuser/.cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import grpc; from generated.nlp import nlp_pb2, nlp_pb2_grpc; ch=grpc.insecure_channel('localhost:50051'); stub=nlp_pb2_grpc.NLPServiceStub(ch); stub.Health(nlp_pb2.HealthRequest())"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+volumes:
+  models_cache:
+    driver: local

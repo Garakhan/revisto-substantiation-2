@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package nlp;
+
+// ============== Embedding Messages ==============
+
+message EmbedRequest {
+  repeated string texts = 1;
+  optional bool normalize = 2;
+}
+
+message FloatArray {
+  repeated float values = 1;
+}
+
+message EmbedResponse {
+  repeated FloatArray embeddings = 1;
+  int32 dimension = 2;
+}
+
+// ============== NER Messages ==============
+
+message NERRequest {
+  repeated string texts = 1;
+}
+
+message Entity {
+  string text = 1;
+  string type = 2;
+  float score = 3;
+  int32 start = 4;
+  int32 end = 5;
+}
+
+message TextEntities {
+  repeated Entity entities = 1;
+}
+
+message NERResponse {
+  repeated TextEntities results = 1;
+}
+
+// ============== Numeric Entity Messages ==============
+
+message NumericRequest {
+  repeated string texts = 1;
+}
+
+message NumericEntity {
+  string text = 1;      // The numeric value as string (e.g., "45%", "500mg")
+  string type = 2;      // Entity type (CARDINAL, PERCENT, QUANTITY, etc.)
+  int32 start = 3;
+  int32 end = 4;
+}
+
+message TextNumericEntities {
+  repeated NumericEntity entities = 1;
+  repeated string tokens = 2;  // Just the text values for easy use
+}
+
+message NumericResponse {
+  repeated TextNumericEntities results = 1;
+}
+
+// ============== Sentenciser Messages ==============
+
+message SentenciseRequest {
+  repeated string texts = 1;
+}
+
+message TextSentences {
+  repeated string sentences = 1;
+}
+
+message SentenciseResponse {
+  repeated TextSentences results = 1;
+}
+
+// ============== Health Messages ==============
+
+message HealthRequest {}
+
+message ModelHealth {
+  bool enabled = 1;
+  bool ready = 2;
+}
+
+message HealthResponse {
+  bool healthy = 1;
+  ModelHealth embedding = 2;
+  ModelHealth ner = 3;
+  ModelHealth sentenciser = 4;
+  ModelHealth numeric_ner = 5;
+}
+
+// ============== Service ==============
+
+service NLPService {
+  // Embedding methods
+  rpc Encode(EmbedRequest) returns (EmbedResponse);
+
+  // NER methods (biomedical entities)
+  rpc ExtractEntities(NERRequest) returns (NERResponse);
+
+  // Numeric entity extraction (using Stanza NER)
+  rpc ExtractNumericEntities(NumericRequest) returns (NumericResponse);
+
+  // Sentenciser methods
+  rpc Sentencise(SentenciseRequest) returns (SentenciseResponse);
+
+  // Health check
+  rpc Health(HealthRequest) returns (HealthResponse);
+}

@@ -1,0 +1,3 @@
+from .gliner_client import process as ExtractNumericEntitiesAlternative
+from .gliner_client import process_batch as ExtractNumericEntitiesAlternativeBatch
+from .gliner_client import labels as ExtractNumericEntitiesAlternativeLabels

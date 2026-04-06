@@ -1,0 +1,19 @@
+venv
+.venv
+__pycache__
+*.pyc
+*.zip
+.idea/
+.python-version
+.DS_Store
+.coverage
+coverage.xml
+
+# Local db volume
+/pgdb/
+
+# Local env file
+/.env
+
+# Package builds
+dist

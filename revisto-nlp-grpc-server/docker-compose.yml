@@ -1,0 +1,9 @@
+version: "3.11"
+services:
+  grpc-server:
+    build: .
+    container_name: grpc_server
+    network_mode: host
+    volumes:
+      - .:/app
+      - ~/.cache/huggingface:/home/appuser/.cache/huggingface

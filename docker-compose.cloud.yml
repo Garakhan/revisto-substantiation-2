@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.cloud
+    container_name: revisto-api
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./models_cache:/home/appuser/.cache
+      - ~/.aws/credentials:/home/appuser/.aws/credentials:ro
+    environment:
+      # Cloud Elasticsearch (AWS OpenSearch or Elastic Cloud)
+      # ES_URL, ES_USER, ES_PASS loaded from AWS Secrets Manager
+      - ES_VERIFY_CERTS=true
+      - ES_INDEX=${ES_INDEX}
+      - ES_ALIAS=${ES_ALIAS}
+
+      # AWS region for Secrets Manager
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+
+      # Models
+      - EMBED_MODEL=${EMBED_MODEL:-pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb}
+      - NER_MODEL=${NER_MODEL:-d4data/biomedical-ner-all}
+      - NER_ENABLED=${NER_ENABLED:-true}
+
+      # Scoring weights
+      - W_SEMANTIC=${W_SEMANTIC:-3}
+      - W_LEXICAL=${W_LEXICAL:-3}
+      - W_NUMERIC=${W_NUMERIC:-1}
+      - W_ENTITY=${W_ENTITY:-1}
+
+      # Claude filtering
+      - CLAUDE_FILTER_ENABLED=${CLAUDE_FILTER_ENABLED:-true}
+      - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-opus-4-20250514}
+
+      # LandingAI S3 visual_claims bucket (for zero data retention mode)
+      - LANDINGAI_OUTPUT_BUCKET=claimsubstantiation
+
+    networks:
+      - revisto-net
+    restart: unless-stopped
+
+networks:
+  revisto-net:
+    driver: bridge
