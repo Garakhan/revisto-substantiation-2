@@ -35,7 +35,8 @@ def build_search_query(
         org_id: int,
         brand_id: int,
         numeric_tokens: List[str] = None,
-        size: int = 50
+        size: int = 50,
+        allowed_ref_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Build ES query using lexical + semantic similarity with numeric boosting.
 
@@ -86,6 +87,14 @@ def build_search_query(
         return score;
     """
 
+    filters = [
+        {"term": {"doc_type": "segment"}},
+        {"term": {"org_id": org_id}},
+        {"term": {"brand_id": brand_id}}
+    ]
+    if allowed_ref_ids:
+        filters.append({"terms": {"ref_id": list(allowed_ref_ids)}})
+
     return {
         "query": {
             "function_score": {
@@ -101,11 +110,7 @@ def build_search_query(
                                 }
                             }
                         ],
-                        "filter": [
-                            {"term": {"doc_type": "segment"}},
-                            {"term": {"org_id": org_id}},
-                            {"term": {"brand_id": brand_id}}
-                        ],
+                        "filter": filters,
                         "minimum_should_match": 0  # Don't require lexical match
                     }
                 },
@@ -144,7 +149,8 @@ def search_single_claim(
     embedder = None,
     ner_extractor: Optional[NERExtractor] = None,
     score_calculator: Optional[ScoreCalculator] = None,
-    numeric_extractor = None
+    numeric_extractor = None,
+    allowed_ref_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Search for evidence matching a single claim"""
 
@@ -183,7 +189,8 @@ def search_single_claim(
         org_id=org_id,
         brand_id=brand_id,
         numeric_tokens=numeric_tokens,
-        size=retrieval_size
+        size=retrieval_size,
+        allowed_ref_ids=allowed_ref_ids,
     )
 
     target_index = index_name or config.es.index_name
@@ -460,7 +467,8 @@ def search_claim_combined_by_sentences(
     ner_extractor: Optional[NERExtractor] = None,
     score_calculator: Optional[ScoreCalculator] = None,
     numeric_extractor=None,
-    sentenciser=None
+    sentenciser=None,
+    allowed_ref_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Search using combined approach but return results grouped by sentence.
 
@@ -494,7 +502,8 @@ def search_claim_combined_by_sentences(
         embedder=embedder,
         ner_extractor=ner_extractor,
         score_calculator=score_calculator,
-        numeric_extractor=numeric_extractor
+        numeric_extractor=numeric_extractor,
+        allowed_ref_ids=allowed_ref_ids,
     )
     logger.info(f"  Block search found {len(block_results)} results")
 
@@ -516,7 +525,8 @@ def search_claim_combined_by_sentences(
             embedder=embedder,
             ner_extractor=ner_extractor,
             score_calculator=score_calculator,
-            numeric_extractor=numeric_extractor
+            numeric_extractor=numeric_extractor,
+            allowed_ref_ids=allowed_ref_ids,
         )
 
         # Mark evidence source

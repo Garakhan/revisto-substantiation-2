@@ -8,7 +8,7 @@ import sys
 import json
 import re
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 import anthropic
 from openpyxl import Workbook, load_workbook
@@ -352,6 +352,132 @@ Use submit_categorization with: sub_claims (the core assertions), reasoning (for
             logger.error(f"  Filter error: {e}")
 
         return "\n\n".join(evidence_blocks), {"error": "fallback"}
+
+    async def categorize_with_subclaim_support(
+        self,
+        claim: str,
+        evidence_blocks: List[str],
+        prior_sub_claims: Optional[List[str]] = None,
+    ) -> dict:
+        """Tier-aware variant of filter_evidence.
+
+        Returns a dict:
+          {
+            "sub_claims": [str, ...],
+            "reasoning": [{"index": int, "category": "full|partial|none",
+                            "supports_sub_claims": [int, ...], "explanation": str}, ...],
+            "full":    [int, ...],
+            "partial": [int, ...],
+            "none":    [int, ...],
+          }
+
+        If prior_sub_claims is provided, Claude must reuse those sub-claims (so
+        indices stay consistent across tier calls).
+        """
+        if not evidence_blocks:
+            return {"sub_claims": prior_sub_claims or [], "reasoning": [],
+                    "full": [], "partial": [], "none": []}
+
+        numbered_evidence = "\n\n".join(f"[{i}] {block}" for i, block in enumerate(evidence_blocks))
+
+        tools = [{
+            "name": "submit_categorization",
+            "description": "Submit evidence categorization with per-sub-claim support.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "sub_claims": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Core assertions of the claim. If prior sub-claims are given, return them unchanged in the same order."
+                    },
+                    "reasoning": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "index": {"type": "integer"},
+                                "category": {"type": "string", "enum": ["full", "partial", "none"]},
+                                "supports_sub_claims": {
+                                    "type": "array",
+                                    "items": {"type": "integer"},
+                                    "description": "0-based indices of sub_claims this evidence supports. Empty for category=none. All indices for category=full."
+                                },
+                                "explanation": {"type": "string"}
+                            },
+                            "required": ["index", "category", "supports_sub_claims", "explanation"]
+                        }
+                    },
+                    "full":    {"type": "array", "items": {"type": "integer"}},
+                    "partial": {"type": "array", "items": {"type": "integer"}},
+                    "none":    {"type": "array", "items": {"type": "integer"}}
+                },
+                "required": ["sub_claims", "reasoning", "full", "partial", "none"]
+            }
+        }]
+
+        if prior_sub_claims:
+            sub_claims_section = (
+                "USE EXACTLY THESE SUB-CLAIMS (return them unchanged, in this order):\n"
+                + "\n".join(f"  [{i}] {s}" for i, s in enumerate(prior_sub_claims))
+            )
+        else:
+            sub_claims_section = (
+                "STEP 1: Identify the CORE ASSERTIONS in the claim (usually 1-3). Don't over-split - combine related ideas.\n"
+                "Example: \"Food allergies can be challenging to identify, and a structured approach helps ensure patients receive the right diagnosis and management.\"\n"
+                "Core assertions:\n"
+                "  - \"Food allergies are challenging to identify\"\n"
+                "  - \"Structured approaches help with correct diagnosis/management\"\n\n"
+                "Example: \"42% of children and 51% of adults with food allergies have experienced a severe reaction\"\n"
+                "Core assertions:\n"
+                "  - \"42% of children with food allergies had severe reactions\"\n"
+                "  - \"51% of adults with food allergies had severe reactions\""
+            )
+
+        prompt = f"""Categorize each evidence item by which sub-claims it supports.
+
+{sub_claims_section}
+
+STEP 2: For each evidence item, list which sub-claim INDICES (0-based) it supports.
+Accept equivalent terms (e.g., "anaphylaxis" = "severe reaction", "difficult" = "challenging").
+Then assign one category:
+  - full:    supports_sub_claims covers ALL sub-claims
+  - partial: supports_sub_claims covers AT LEAST ONE sub-claim
+  - none:    supports_sub_claims is empty
+
+CLAIM: {claim}
+
+EVIDENCE:
+{numbered_evidence}
+
+Use submit_categorization. The 'full', 'partial', 'none' arrays must each list the evidence
+indices in their respective category, consistent with the per-evidence categories in 'reasoning'.
+"""
+
+        try:
+            response = await self.client.messages.create(
+                model=self.model,
+                max_tokens=2500,
+                tools=tools,
+                tool_choice={"type": "tool", "name": "submit_categorization"},
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            for block in response.content:
+                if block.type == "tool_use" and block.name == "submit_categorization":
+                    return {
+                        "sub_claims": block.input.get("sub_claims", prior_sub_claims or []),
+                        "reasoning": block.input.get("reasoning", []),
+                        "full":    block.input.get("full", []),
+                        "partial": block.input.get("partial", []),
+                        "none":    block.input.get("none", []),
+                    }
+
+        except Exception as e:
+            logger.error(f"  categorize_with_subclaim_support error: {e}")
+
+        return {"sub_claims": prior_sub_claims or [], "reasoning": [],
+                "full": [], "partial": [], "none": []}
 
     async def deduplicate_blocks(self, claim: str, evidence_blocks: List[str]) -> List[str]:
         """Pass 3: Remove redundant evidence blocks."""
