@@ -32,6 +32,9 @@ def get_index_mapping(embed_config: EmbedConfig) -> Dict[str, Any]:
     
     return {
         "properties": {
+            # Document type: "segment" or "ref_metadata"
+            "doc_type": {"type": "keyword"},
+
             # Document identifiers
             "ref_id": {"type": "keyword"},
             "ref_title": {"type": "text", "analyzer": "text_analyzer"},

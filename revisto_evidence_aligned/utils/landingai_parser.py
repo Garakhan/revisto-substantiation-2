@@ -21,6 +21,8 @@ from revisto_evidence_aligned.utils.secrets import (
 
 OUTPUT_TYPE = ["markdown", "chunks", "splits", "grounding", "metadata"]
 
+LANDINGAI_TIMEOUT = 1800.0  # 30 minutes
+
 async def process_pdf_landingai(pdf_path: str, extract_metadata: bool = True, cache_dir: str = None):
     """Parse a PDF using LandingAI and optionally extract metadata.
 
@@ -621,7 +623,7 @@ async def download_and_load_json(pdf_path: str, output_url: str) -> dict:
     json_path = Path(pdf_path).with_suffix(".json")
 
     # Download and save JSON
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=LANDINGAI_TIMEOUT) as client:
         async with client.stream("GET", output_url) as resp:
             resp.raise_for_status()
             with open(json_path, "wb") as f:
@@ -643,7 +645,7 @@ class LandingAIParser:
     async def create_job(self, pdf_path: str, document_url: str = None, output_save_url: str = None):
         url = self.base_url
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=LANDINGAI_TIMEOUT) as client:
             if document_url:
                 # Zero data retention mode: use multipart form data with URLs
                 # Use files dict with None for file content to force multipart encoding
@@ -674,7 +676,7 @@ class LandingAIParser:
     async def monitor_job_status(self, job_id: int):
         job_url = f"{self.base_url}/{job_id}"
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=LANDINGAI_TIMEOUT) as client:
             response = await client.get(job_url, headers=self.headers)
 
         if response.status_code == 200:
@@ -690,7 +692,7 @@ class LandingAIParser:
     async def retrieve_results(self, job_id: int, output_type: str, pdf_path: str):
         url = f"{self.base_url}/{job_id}"
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=LANDINGAI_TIMEOUT) as client:
             response = await client.get(url, headers=self.headers)
 
         response_data = response.json()
@@ -717,7 +719,7 @@ class LandingAIParser:
         """Retrieve both chunks and markdown from a completed job."""
         url = f"{self.base_url}/{job_id}"
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=LANDINGAI_TIMEOUT) as client:
             response = await client.get(url, headers=self.headers)
 
         response_data = response.json()

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
 import anthropic
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.cell.rich_text import TextBlock, CellRichText
 from openpyxl.cell.text import InlineFont
 from openpyxl.styles import Alignment, Font
@@ -878,6 +878,127 @@ def format_sentence_evidence_rich_text(sentence_results: list, page_offsets: dic
     return CellRichText(*all_parts)
 
 
+def _normalize_key(key) -> str:
+    """Normalize a column header for case/separator-insensitive lookup."""
+    if key is None:
+        return ""
+    return str(key).strip().lower().replace("_", " ")
+
+
+def _pick(row: dict, *candidates: str) -> str:
+    """Return the first non-empty value in row whose key matches any candidate (case-insensitive)."""
+    lookup = {_normalize_key(k): v for k, v in row.items()}
+    for name in candidates:
+        value = lookup.get(_normalize_key(name))
+        if value is not None and str(value).strip() != "":
+            return str(value)
+    return ""
+
+
+# Column aliases (all matched case-insensitively; underscores and spaces treated the same)
+_CLAIM_ID_ALIASES = ("claim identifier", "claim id", "id")
+_CLAIM_TEXT_ALIASES = ("claim text", "text", "claim")
+_EXPECTED_SUB_ALIASES = ("expected substantiation",)
+
+
+def _row_to_claim(row: dict) -> dict:
+    """Build a claim dict from a row (CSV or XLSX). Returns None if claim text is empty."""
+    claim_id = fix_text_encoding(_pick(row, *_CLAIM_ID_ALIASES))
+    claim_text = fix_text_encoding(_pick(row, *_CLAIM_TEXT_ALIASES))
+    expected_sub = fix_text_encoding(_pick(row, *_EXPECTED_SUB_ALIASES))
+    if not claim_text.strip():
+        return None
+    return {
+        "claim_id": claim_id,
+        "text": claim_text,
+        "expected_substantiation": expected_sub,
+    }
+
+
+def _load_claims_xlsx(claims_file: Path) -> list:
+    """Load claims from an XLSX file (first sheet, first row = headers)."""
+    wb = load_workbook(claims_file, read_only=True, data_only=True)
+    try:
+        ws = wb.active
+        rows = ws.iter_rows(values_only=True)
+        header = next(rows, None)
+        if not header:
+            return []
+        header = [("" if h is None else str(h)) for h in header]
+
+        claims = []
+        for row in rows:
+            if row is None:
+                continue
+            row_dict = {}
+            for i, col in enumerate(header):
+                if not col:
+                    continue
+                value = row[i] if i < len(row) else None
+                row_dict[col] = "" if value is None else str(value)
+            claim = _row_to_claim(row_dict)
+            if claim:
+                claims.append(claim)
+        return claims
+    finally:
+        wb.close()
+
+
+def _load_claims_csv(claims_file: Path) -> list:
+    """Load claims from a CSV file, trying several encodings."""
+    encodings_to_try = [
+        ('utf-8-sig', 'strict'),   # UTF-8 with BOM
+        ('utf-8', 'strict'),       # UTF-8 without BOM
+        ('cp1252', 'strict'),      # Windows-1252 (common for Excel exports)
+        ('iso-8859-1', 'strict'),  # Latin-1
+        ('mac_roman', 'strict'),   # macOS legacy encoding
+        ('utf-8', 'replace'),      # Last resort: UTF-8 with replacement
+    ]
+
+    claims = []
+    for encoding, errors in encodings_to_try:
+        try:
+            claims = []
+            with open(claims_file, 'r', encoding=encoding, errors=errors) as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    claim = _row_to_claim(row)
+                    if claim:
+                        claims.append(claim)
+            # Check if we got replacement characters (indicates wrong encoding)
+            sample = ' '.join(c.get('text', '')[:100] for c in claims[:3])
+            if '�' in sample:
+                logger.debug(f"Encoding {encoding} produced replacement characters, trying next...")
+                claims = []
+                continue
+            logger.info(f"Successfully read CSV with {encoding} encoding")
+            return claims
+        except UnicodeDecodeError:
+            claims = []
+            continue
+
+    return claims
+
+
+def _load_claims(claims_file: Path) -> list:
+    """Load claims from CSV or XLSX. Raises ValueError if nothing could be read."""
+    ext = claims_file.suffix.lower()
+    if ext in ('.xlsx', '.xlsm'):
+        claims = _load_claims_xlsx(claims_file)
+        if not claims:
+            raise ValueError(
+                f"No claims loaded from {claims_file}. "
+                f"Expected a header row with one of: {_CLAIM_TEXT_ALIASES}"
+            )
+        logger.info(f"Loaded {len(claims)} claims from XLSX {claims_file}")
+        return claims
+
+    claims = _load_claims_csv(claims_file)
+    if not claims:
+        raise ValueError(f"Could not decode {claims_file} with any supported encoding")
+    return claims
+
+
 def search_and_export_csv(
     claims_file: Path,
     org_id: int,
@@ -897,52 +1018,7 @@ def search_and_export_csv(
     if es_client is None:
         es_client = ESClient(config.es)
 
-    # Load claims from CSV (try different encodings)
-    # Order matters: try strict encodings first, then fallback to permissive ones
-    claims = []
-    encodings_to_try = [
-        ('utf-8-sig', 'strict'),   # UTF-8 with BOM
-        ('utf-8', 'strict'),       # UTF-8 without BOM
-        ('cp1252', 'strict'),      # Windows-1252 (common for Excel exports)
-        ('iso-8859-1', 'strict'),  # Latin-1
-        ('mac_roman', 'strict'),   # macOS legacy encoding
-        ('utf-8', 'replace'),      # Last resort: UTF-8 with replacement
-    ]
-
-    for encoding, errors in encodings_to_try:
-        try:
-            claims = []
-            with open(claims_file, 'r', encoding=encoding, errors=errors) as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    # Support different column name variations
-                    claim_id = row.get('claim identifier') or row.get('claim_identifier') or row.get('id', '')
-                    claim_text = row.get('claim text') or row.get('claim_text') or row.get('text', '')
-                    expected_sub = row.get('expected substantiation') or row.get('expected_substantiation') or ''
-                    # Fix any remaining encoding issues in the text
-                    claim_id = fix_text_encoding(claim_id)
-                    claim_text = fix_text_encoding(claim_text)
-                    expected_sub = fix_text_encoding(expected_sub)
-                    claims.append({
-                        "claim_id": claim_id,
-                        "text": claim_text,
-                        "expected_substantiation": expected_sub
-                    })
-            # Check if we got replacement characters (indicates wrong encoding)
-            sample = ' '.join(c.get('text', '')[:100] for c in claims[:3])
-            if '�' in sample:
-                logger.debug(f"Encoding {encoding} produced replacement characters, trying next...")
-                claims = []
-                continue
-            logger.info(f"Successfully read CSV with {encoding} encoding")
-            break
-        except UnicodeDecodeError:
-            claims = []
-            continue
-
-    if not claims:
-        raise ValueError(f"Could not decode {claims_file} with any supported encoding")
-
+    claims = _load_claims(claims_file)
     logger.info(f"Loaded {len(claims)} claims from {claims_file}")
 
     # Load models (gRPC or local)
@@ -1090,51 +1166,7 @@ def search_and_export_xlsx(
     if es_client is None:
         es_client = ESClient(config.es)
 
-    # Load claims from CSV (try different encodings)
-    # Order matters: try strict encodings first, then fallback to permissive ones
-    claims = []
-    encodings_to_try = [
-        ('utf-8-sig', 'strict'),   # UTF-8 with BOM
-        ('utf-8', 'strict'),       # UTF-8 without BOM
-        ('cp1252', 'strict'),      # Windows-1252 (common for Excel exports)
-        ('iso-8859-1', 'strict'),  # Latin-1
-        ('mac_roman', 'strict'),   # macOS legacy encoding
-        ('utf-8', 'replace'),      # Last resort: UTF-8 with replacement
-    ]
-
-    for encoding, errors in encodings_to_try:
-        try:
-            claims = []
-            with open(claims_file, 'r', encoding=encoding, errors=errors) as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    claim_id = row.get('claim identifier') or row.get('claim_identifier') or row.get('id', '')
-                    claim_text = row.get('claim text') or row.get('claim_text') or row.get('text', '')
-                    expected_sub = row.get('expected substantiation') or row.get('expected_substantiation') or ''
-                    # Fix any remaining encoding issues in the text
-                    claim_id = fix_text_encoding(claim_id)
-                    claim_text = fix_text_encoding(claim_text)
-                    expected_sub = fix_text_encoding(expected_sub)
-                    claims.append({
-                        "claim_id": claim_id,
-                        "text": claim_text,
-                        "expected_substantiation": expected_sub
-                    })
-            # Check if we got replacement characters (indicates wrong encoding)
-            sample = ' '.join(c.get('text', '')[:100] for c in claims[:3])
-            if '�' in sample:
-                logger.debug(f"Encoding {encoding} produced replacement characters, trying next...")
-                claims = []
-                continue
-            logger.info(f"Successfully read CSV with {encoding} encoding")
-            break
-        except UnicodeDecodeError:
-            claims = []
-            continue
-
-    if not claims:
-        raise ValueError(f"Could not decode {claims_file} with any supported encoding")
-
+    claims = _load_claims(claims_file)
     logger.info(f"Loaded {len(claims)} claims from {claims_file}")
 
     # Load models (gRPC or local)
@@ -1312,7 +1344,13 @@ Examples:
         "--claims-file",
         type=Path,
         required=True,
-        help="CSV file containing claims (columns: 'claim identifier', 'claim text')"
+        help=(
+            "Claims file (.csv or .xlsx). "
+            "Column matching is case-insensitive; accepted headers: "
+            "'claim identifier' / 'claim id' / 'id'; "
+            "'claim text' / 'text' / 'claim'; "
+            "'expected substantiation' (optional)."
+        )
     )
     parser.add_argument(
         "--org-id",

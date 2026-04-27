@@ -180,8 +180,7 @@ async def process_reference_document(
     else:
         all_ner_results = [[] for _ in all_texts]
 
-    # --- Phase 3: Build documents ---
-    # Prepare metadata once
+    # --- Phase 3: Build metadata document (stored once per PDF, not per segment) ---
     extracted_meta = metadata.get("metadata") if metadata else None
     if extracted_meta:
         year = extracted_meta.get("year")
@@ -208,6 +207,18 @@ async def process_reference_document(
         else:
             doc_metadata = None
 
+    # Index metadata as a separate document (one per PDF)
+    if doc_metadata:
+        metadata_doc = {
+            "doc_type": "ref_metadata",
+            "ref_id": ref_id,
+            "ref_title": ref_title,
+            "doc_metadata": doc_metadata,
+            "timestamp": datetime.datetime.utcnow().isoformat()
+        }
+        documents.append(metadata_doc)
+
+    # --- Phase 4: Build segment documents ---
     for i, (text_unit, segment, segment_page, para_on_page, sent_idx) in enumerate(text_unit_records):
         embedding = all_embeddings[i]
         numeric_tokens = all_numeric_tokens[i]
@@ -220,6 +231,7 @@ async def process_reference_document(
         source = segment.metadata.get("source") if segment.metadata else None
 
         doc = {
+            "doc_type": "segment",
             "ref_id": ref_id,
             "ref_title": ref_title,
             "sent_id": doc_id,
@@ -245,9 +257,6 @@ async def process_reference_document(
             "source": source,
             "timestamp": datetime.datetime.utcnow().isoformat()
         }
-
-        if doc_metadata:
-            doc["doc_metadata"] = doc_metadata
 
         documents.append(doc)
 

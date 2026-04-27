@@ -102,6 +102,7 @@ def build_search_query(
                             }
                         ],
                         "filter": [
+                            {"term": {"doc_type": "segment"}},
                             {"term": {"org_id": org_id}},
                             {"term": {"brand_id": brand_id}}
                         ],
@@ -244,6 +245,16 @@ def search_single_claim(
                 break
 
     logger.info(f"Stage 2 (re-ranking): {len(filtered_results)} results after filtering")
+
+    # Attach doc_metadata from separate metadata documents
+    if filtered_results:
+        ref_ids = list(set(r.get("ref_id") for r in filtered_results if r.get("ref_id")))
+        if ref_ids:
+            metadata_map = es_client.get_ref_metadata(target_index, ref_ids)
+            for result in filtered_results:
+                ref_id = result.get("ref_id")
+                if ref_id and ref_id in metadata_map:
+                    result["doc_metadata"] = metadata_map[ref_id]
 
     return filtered_results
 

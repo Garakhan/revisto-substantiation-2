@@ -187,6 +187,42 @@ class ESClient:
         result = self.client.count(index=index_name, body={"query": query})
         return result["count"]
     
+    def get_ref_metadata(
+        self,
+        index_name: str,
+        ref_ids: List[str]
+    ) -> Dict[str, Dict[str, Any]]:
+        """Fetch ref_metadata documents for a list of ref_ids.
+
+        Returns:
+            Dict mapping ref_id -> doc_metadata dict
+        """
+        if not ref_ids:
+            return {}
+
+        query = {
+            "bool": {
+                "filter": [
+                    {"term": {"doc_type": "ref_metadata"}},
+                    {"terms": {"ref_id": list(set(ref_ids))}}
+                ]
+            }
+        }
+
+        try:
+            response = self.client.search(
+                index=index_name,
+                body={"query": query, "size": len(set(ref_ids))},
+            )
+            result = {}
+            for hit in response["hits"]["hits"]:
+                source = hit["_source"]
+                result[source["ref_id"]] = source.get("doc_metadata", {})
+            return result
+        except Exception as e:
+            logger.error(f"Error fetching ref metadata: {e}")
+            return {}
+
     def delete_index(self, index_name: str) -> bool:
         """Delete an index"""
         try:
